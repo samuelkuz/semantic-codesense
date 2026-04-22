@@ -21,7 +21,9 @@
   ],
   "activationEvents": [
     "onLanguage:rust",
-    "onCommand:semantic-codesense.generateMentalModelComment"
+    "onCommand:semantic-codesense.generateMentalModelComment",
+    "onCommand:semantic-codesense.showRustGraphDebugView",
+    "onCommand:semantic-codesense.showRustSymbolContext"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -29,6 +31,16 @@
       {
         "command": "semantic-codesense.generateMentalModelComment",
         "title": "Generate Mental Model Comment",
+        "category": "Semantic CodeSense"
+      },
+      {
+        "command": "semantic-codesense.showRustGraphDebugView",
+        "title": "Show Rust Graph Debug View",
+        "category": "Semantic CodeSense"
+      },
+      {
+        "command": "semantic-codesense.showRustSymbolContext",
+        "title": "Show Rust Symbol Context",
         "category": "Semantic CodeSense"
       }
     ],
@@ -38,6 +50,16 @@
           "command": "semantic-codesense.generateMentalModelComment",
           "when": "editorLangId == rust",
           "group": "navigation@20"
+        },
+        {
+          "command": "semantic-codesense.showRustGraphDebugView",
+          "when": "editorLangId == rust",
+          "group": "navigation@21"
+        },
+        {
+          "command": "semantic-codesense.showRustSymbolContext",
+          "when": "editorLangId == rust",
+          "group": "navigation@22"
         }
       ]
     },

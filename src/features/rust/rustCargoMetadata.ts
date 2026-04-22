@@ -98,3 +98,59 @@ export async function loadCargoWorkspaceContext(
     return undefined;
   }
 }
+
+export function inferRustModulePath(
+  filePath: string,
+  cargoWorkspace?: CargoWorkspaceContext
+): string {
+  const normalizedFilePath = normalizeFilePath(filePath);
+  const matchingPackageRoot = cargoWorkspace
+    ? resolvePackageRoot(normalizedFilePath, cargoWorkspace)
+    : undefined;
+  const crateRoot = matchingPackageRoot ?? normalizeFilePath(path.dirname(filePath));
+  const relativePath = normalizeFilePath(path.relative(crateRoot, normalizedFilePath));
+  const pathSegments = relativePath.split("/").filter((segment) => segment !== "");
+
+  if (pathSegments.length === 0) {
+    return "crate";
+  }
+
+  if (pathSegments[0] === "src") {
+    const moduleSegments = pathSegments.slice(1);
+
+    if (moduleSegments.length === 0) {
+      return "crate";
+    }
+
+    const fileName = moduleSegments[moduleSegments.length - 1];
+    const stem = fileName.replace(/\.rs$/, "");
+    const normalizedSegments = moduleSegments.slice(0, -1);
+
+    if (stem !== "lib" && stem !== "main" && stem !== "mod") {
+      normalizedSegments.push(stem);
+    }
+
+    return normalizedSegments.length === 0
+      ? "crate"
+      : `crate::${normalizedSegments.join("::")}`;
+  }
+
+  const fallbackStem = path.basename(normalizedFilePath, path.extname(normalizedFilePath));
+  return fallbackStem === "" ? "crate" : fallbackStem;
+}
+
+function resolvePackageRoot(
+  filePath: string,
+  cargoWorkspace: CargoWorkspaceContext
+): string | undefined {
+  const matchingPackage = cargoWorkspace.packages
+    .map((pkg) => normalizeFilePath(path.dirname(pkg.manifestPath)))
+    .filter((pkgRoot) => filePath.startsWith(`${pkgRoot}/`) || filePath === pkgRoot)
+    .sort((left, right) => right.length - left.length)[0];
+
+  return matchingPackage;
+}
+
+function normalizeFilePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}

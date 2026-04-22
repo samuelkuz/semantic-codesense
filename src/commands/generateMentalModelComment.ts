@@ -7,7 +7,9 @@ import {
   findNearestSymbolByLine,
   getSymbolContext
 } from "../features/rust/rustGraphBuilder";
+import { buildRustFileGraphWithLsp } from "../features/rust/rustGraphLspAugmenter";
 import { createCommentGenerationService } from "../services/commentGenerationService";
+import { parseRustSyntaxFile } from "../features/rust/rustTreeSitterParser";
 import type { SymbolNode } from "../types/graph";
 
 export const GENERATE_MENTAL_MODEL_COMMENT_COMMAND =
@@ -38,11 +40,22 @@ export function registerGenerateMentalModelCommentCommand(
         return;
       }
 
-      const graph = buildRustFileGraph({
-        filePath:
-          editor.document.uri.fsPath || path.basename(editor.document.uri.path),
-        sourceText: editor.document.getText()
+      const filePath =
+        editor.document.uri.fsPath || path.basename(editor.document.uri.path);
+      const sourceText = editor.document.getText();
+      const syntax = parseRustSyntaxFile({
+        filePath,
+        sourceText
       });
+      const baseGraph = buildRustFileGraph({
+        filePath,
+        sourceText
+      });
+      const { graph } = await buildRustFileGraphWithLsp(
+        editor.document,
+        baseGraph,
+        syntax
+      );
       const symbol =
         findNearestSymbolByLine(graph, editor.selection.active.line + 1) ??
         createFallbackSymbol(editor);
@@ -55,7 +68,7 @@ export function registerGenerateMentalModelCommentCommand(
 
       const result = await service.generate({
         documentUri: editor.document.uri.toString(),
-        sourceText: editor.document.getText(),
+        sourceText,
         focusText,
         targetNode: symbol,
         context,

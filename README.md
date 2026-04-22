@@ -15,8 +15,12 @@ Semantic CodeSense is a VS Code extension scaffold for exploring AI-assisted men
 ## Commands
 
 - `Semantic CodeSense: Generate Mental Model Comment`
+- `Semantic CodeSense: Show Rust Graph Debug View`
+- `Semantic CodeSense: Show Rust Symbol Context`
 
 Today this command only confirms that the extension wiring is working and that AI generation has not been implemented yet.
+The debug command opens a JSON view of the current Rust file's parsed syntax model, graph nodes and edges, selected-symbol context, Cargo workspace summary, and any rust-analyzer/LSP data available at the cursor.
+The symbol context command opens a Markdown report for the symbol under the cursor with core context, dependency context, and usage context gathered from the augmented Rust graph plus rust-analyzer.
 
 ## Project layout
 
@@ -36,6 +40,17 @@ npm run compile
 ```
 
 Then open the project in VS Code and press `F5` to launch an Extension Development Host.
+
+## Testing On A Rust Repo
+
+1. Open this extension project in VS Code.
+2. Press `F5` to launch the Extension Development Host.
+3. In the Extension Development Host, open any Rust workspace or repo.
+4. Open a `.rs` file and place your cursor inside a function or method.
+5. Run `Semantic CodeSense: Show Rust Graph Debug View` from the Command Palette.
+6. Run `Semantic CodeSense: Show Rust Symbol Context` to inspect the retrieval-style context report for the symbol under your cursor.
+
+That debug view is the easiest way to inspect what the extension currently understands about the file.
 
 ## Retrieval backbone
 

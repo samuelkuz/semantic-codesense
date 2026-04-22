@@ -1,5 +1,10 @@
 import type { SymbolNode } from "../../types/graph";
 
+export interface RustSourcePosition {
+  line: number;
+  character: number;
+}
+
 export interface RustImplBinding {
   implSymbolId: string;
   targetTypeName: string;
@@ -15,6 +20,7 @@ export interface RustCallBinding {
   ownerSymbolId: string;
   targetName: string;
   targetKindHint: "function" | "method";
+  sourcePosition: RustSourcePosition;
 }
 
 export interface RustTypeBinding {

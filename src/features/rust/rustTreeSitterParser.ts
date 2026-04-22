@@ -348,7 +348,8 @@ function extractCallBindings(
     calls.push({
       ownerSymbolId: ownerSymbol.id,
       targetName: extractedCall.name,
-      targetKindHint: extractedCall.kind
+      targetKindHint: extractedCall.kind,
+      sourcePosition: extractedCall.sourcePosition
     });
   });
 
@@ -359,12 +360,20 @@ function extractCallBindings(
 
 function extractCallTarget(
   functionNode: Parser.SyntaxNode
-): { name: string; kind: "function" | "method" } | undefined {
+): {
+  name: string;
+  kind: "function" | "method";
+  sourcePosition: { line: number; character: number };
+} | undefined {
   switch (functionNode.type) {
     case "identifier":
       return {
         name: functionNode.text.trim(),
-        kind: "function"
+        kind: "function",
+        sourcePosition: {
+          line: functionNode.startPosition.row + 1,
+          character: functionNode.startPosition.column
+        }
       };
     case "field_expression": {
       const fieldNode = functionNode.childForFieldName("field");
@@ -372,7 +381,11 @@ function extractCallTarget(
       return fieldNode
         ? {
             name: fieldNode.text.trim(),
-            kind: "method"
+            kind: "method",
+            sourcePosition: {
+              line: fieldNode.startPosition.row + 1,
+              character: fieldNode.startPosition.column
+            }
           }
         : undefined;
     }
@@ -382,7 +395,11 @@ function extractCallTarget(
       return nameNode
         ? {
             name: nameNode.text.trim(),
-            kind: "function"
+            kind: "function",
+            sourcePosition: {
+              line: nameNode.startPosition.row + 1,
+              character: nameNode.startPosition.column
+            }
           }
         : undefined;
     }
