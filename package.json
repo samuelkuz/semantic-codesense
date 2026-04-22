@@ -1,0 +1,103 @@
+{
+  "name": "semantic-codesense",
+  "displayName": "Semantic CodeSense",
+  "description": "Scaffolding for a VS Code extension that helps build mental models of Rust code with AI.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "rust",
+    "ai",
+    "comments",
+    "code-understanding",
+    "semantics"
+  ],
+  "activationEvents": [
+    "onLanguage:rust",
+    "onCommand:semantic-codesense.generateMentalModelComment"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "semantic-codesense.generateMentalModelComment",
+        "title": "Generate Mental Model Comment",
+        "category": "Semantic CodeSense"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "semantic-codesense.generateMentalModelComment",
+          "when": "editorLangId == rust",
+          "group": "navigation@20"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Semantic CodeSense",
+      "properties": {
+        "semanticCodesense.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Semantic CodeSense in Rust files."
+        },
+        "semanticCodesense.commentTone": {
+          "type": "string",
+          "enum": [
+            "concise",
+            "balanced",
+            "detailed"
+          ],
+          "default": "balanced",
+          "description": "Reserved for future AI-generated comment tone selection."
+        },
+        "semanticCodesense.logLevel": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ],
+          "default": "info",
+          "description": "Set the extension output verbosity."
+        },
+        "semanticCodesense.showCodeLens": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show placeholder CodeLens actions above supported Rust symbols."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist .vscode-test",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint \"src/**/*.ts\"",
+    "pretest": "npm run compile && npm run lint",
+    "test": "node --test dist/test/*.test.js",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.95.0",
+    "@typescript-eslint/eslint-plugin": "^8.14.0",
+    "@typescript-eslint/parser": "^8.14.0",
+    "eslint": "^8.57.1",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-rust": "^0.24.0"
+  }
+}
