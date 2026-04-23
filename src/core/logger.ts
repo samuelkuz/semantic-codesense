@@ -7,6 +7,7 @@ export interface Logger extends vscode.Disposable {
   info(message: string): void;
   warn(message: string): void;
   error(message: string): void;
+  show(preserveFocus?: boolean): void;
 }
 
 const LOG_WEIGHTS: Record<LogLevel, number> = {
@@ -23,6 +24,10 @@ class OutputChannelLogger implements Logger {
 
   dispose(): void {
     this.channel.dispose();
+  }
+
+  show(preserveFocus?: boolean): void {
+    this.channel.show(preserveFocus);
   }
 
   debug(message: string): void {

@@ -1,16 +1,9 @@
 import * as vscode from "vscode";
-import path from "node:path";
 
+import { getExtensionConfiguration } from "../core/configuration";
 import type { Logger } from "../core/logger";
-import {
-  buildRustFileGraph,
-  findNearestSymbolByLine,
-  getSymbolContext
-} from "../features/rust/rustGraphBuilder";
-import { buildRustFileGraphWithLsp } from "../features/rust/rustGraphLspAugmenter";
+import { collectRustSymbolContextReport } from "../features/rust/rustSymbolContextCollector";
 import { createCommentGenerationService } from "../services/commentGenerationService";
-import { parseRustSyntaxFile } from "../features/rust/rustTreeSitterParser";
-import type { SymbolNode } from "../types/graph";
 
 export const GENERATE_MENTAL_MODEL_COMMENT_COMMAND =
   "semantic-codesense.generateMentalModelComment";
@@ -19,90 +12,124 @@ export function registerGenerateMentalModelCommentCommand(
   context: vscode.ExtensionContext,
   logger: Logger
 ): void {
-  const service = createCommentGenerationService(logger);
+  const service = createCommentGenerationService(
+    logger,
+    getExtensionConfiguration()
+  );
 
   const disposable = vscode.commands.registerCommand(
     GENERATE_MENTAL_MODEL_COMMENT_COMMAND,
     async () => {
-      const editor = vscode.window.activeTextEditor;
+      try {
+        logger.show(true);
+        logger.info("Generate Mental Model Comment command invoked.");
 
-      if (!editor) {
-        void vscode.window.showWarningMessage(
-          "Open a Rust file before using Semantic CodeSense."
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Semantic CodeSense",
+            cancellable: false
+          },
+          async (progress) => {
+            progress.report({ message: "Checking active Rust symbol..." });
+
+            const editor = vscode.window.activeTextEditor;
+
+            if (!editor) {
+              logger.warn("Generate command aborted: no active editor.");
+              void vscode.window.showWarningMessage(
+                "Open a Rust file before using Semantic CodeSense."
+              );
+              return;
+            }
+
+            logger.info(
+              `Generate command active document: ${editor.document.uri.toString()} at line ${editor.selection.active.line + 1}, column ${editor.selection.active.character + 1}.`
+            );
+
+            if (editor.document.languageId !== "rust") {
+              logger.warn(
+                `Generate command aborted: active document language is "${editor.document.languageId}".`
+              );
+              void vscode.window.showWarningMessage(
+                "Semantic CodeSense is currently available for Rust files only."
+              );
+              return;
+            }
+
+            progress.report({ message: "Collecting Rust symbol context..." });
+            logger.info("Collecting Rust symbol context report for current cursor.");
+            const report = await collectRustSymbolContextReport(
+              editor.document,
+              editor.selection.active,
+              logger
+            );
+
+            if (!report) {
+              logger.warn(
+                `Generate command could not resolve a Rust symbol at line ${editor.selection.active.line + 1}.`
+              );
+              void vscode.window.showWarningMessage(
+                "Semantic CodeSense could not resolve a Rust symbol at the current cursor position."
+              );
+              return;
+            }
+
+            logger.info(
+              `Resolved target symbol for generation: ${report.targetNode.kind} "${report.targetNode.name}" in module "${report.targetNode.modulePath}".`
+            );
+
+            const focusText =
+              editor.document.getText(editor.selection).trim() ||
+              report.targetNode.signature ||
+              report.targetNode.name;
+
+            progress.report({ message: "Requesting Ollama summary..." });
+            logger.info("Requesting semantic summary from Ollama.");
+            const result = await service.generate({
+              documentUri: editor.document.uri.toString(),
+              sourceText: editor.document.getText(),
+              focusText,
+              targetNode: report.targetNode,
+              context: report.symbolContext,
+              graph: report.graph,
+              contextMarkdown: report.markdown
+            });
+
+            logger.info(
+              `Semantic summary generation completed with status "${result.status}".`
+            );
+
+            if (result.status !== "success" || !result.markdown) {
+              logger.warn(`Semantic summary generation failed: ${result.message}`);
+              void vscode.window.showWarningMessage(result.message);
+              return;
+            }
+
+            progress.report({ message: "Opening generated summary..." });
+            const reportDocument = await vscode.workspace.openTextDocument({
+              language: "markdown",
+              content: result.markdown
+            });
+
+            await vscode.window.showTextDocument(reportDocument, {
+              preview: false,
+              viewColumn: vscode.ViewColumn.Beside
+            });
+
+            void vscode.window.showInformationMessage(result.message);
+          }
         );
-        return;
-      }
-
-      if (editor.document.languageId !== "rust") {
-        void vscode.window.showWarningMessage(
-          "Semantic CodeSense is currently scaffolded for Rust files only."
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown generation failure.";
+        logger.error(`Generate command failed before completion: ${message}`);
+        void vscode.window.showErrorMessage(
+          `Semantic CodeSense generation failed: ${message}`
         );
-        return;
       }
-
-      const filePath =
-        editor.document.uri.fsPath || path.basename(editor.document.uri.path);
-      const sourceText = editor.document.getText();
-      const syntax = parseRustSyntaxFile({
-        filePath,
-        sourceText
-      });
-      const baseGraph = buildRustFileGraph({
-        filePath,
-        sourceText
-      });
-      const { graph } = await buildRustFileGraphWithLsp(
-        editor.document,
-        baseGraph,
-        syntax
-      );
-      const symbol =
-        findNearestSymbolByLine(graph, editor.selection.active.line + 1) ??
-        createFallbackSymbol(editor);
-      const context = getSymbolContext(graph, symbol.id);
-
-      const focusText =
-        editor.document.getText(editor.selection).trim() ||
-        symbol.signature ||
-        symbol.name;
-
-      const result = await service.generate({
-        documentUri: editor.document.uri.toString(),
-        sourceText,
-        focusText,
-        targetNode: symbol,
-        context,
-        graph
-      });
-
-      logger.info(
-        `Placeholder command invoked for ${symbol.kind} "${symbol.name}".`
-      );
-
-      void vscode.window.showInformationMessage(result.message);
     }
   );
 
   context.subscriptions.push(disposable);
-}
-
-function createFallbackSymbol(
-  editor: vscode.TextEditor
-): SymbolNode {
-  const line = editor.selection.active.line;
-  const currentLine = editor.document.lineAt(line).text.trim() || "selection";
-
-  return {
-    id: `rust:fallback:${line + 1}:${currentLine}`,
-    filePath: editor.document.uri.fsPath || "memory.rs",
-    modulePath: "memory",
-    language: "rust",
-    kind: "function",
-    name: "selection",
-    span: {
-      startLine: line + 1,
-      endLine: line + 1
-    },
-    signature: currentLine
-  };
 }

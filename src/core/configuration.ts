@@ -8,13 +8,17 @@ export interface ExtensionConfiguration {
   commentTone: CommentTone;
   logLevel: LogLevel;
   showCodeLens: boolean;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
 }
 
 const DEFAULT_CONFIGURATION: ExtensionConfiguration = {
   enabled: true,
   commentTone: "balanced",
   logLevel: "info",
-  showCodeLens: false
+  showCodeLens: false,
+  ollamaBaseUrl: "http://localhost:11434",
+  ollamaModel: "qwen3-coder:30b"
 };
 
 export function getExtensionConfiguration(): ExtensionConfiguration {
@@ -36,6 +40,14 @@ export function getExtensionConfiguration(): ExtensionConfiguration {
     showCodeLens: configuration.get<boolean>(
       "showCodeLens",
       DEFAULT_CONFIGURATION.showCodeLens
+    ),
+    ollamaBaseUrl: configuration.get<string>(
+      "ollamaBaseUrl",
+      DEFAULT_CONFIGURATION.ollamaBaseUrl
+    ),
+    ollamaModel: configuration.get<string>(
+      "ollamaModel",
+      DEFAULT_CONFIGURATION.ollamaModel
     )
   };
 }

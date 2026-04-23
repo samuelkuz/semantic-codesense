@@ -9,15 +9,25 @@ import { registerRustCodeSenseFeatures } from "./features/rust/registerRustCodeS
 export function activate(context: vscode.ExtensionContext): void {
   const logger = createLogger();
   context.subscriptions.push(logger);
+  logger.show(true);
 
-  logger.info("Activating Semantic CodeSense.");
+  try {
+    logger.info("Activating Semantic CodeSense.");
 
-  registerGenerateMentalModelCommentCommand(context, logger);
-  registerShowRustGraphDebugViewCommand(context, logger);
-  registerShowRustSymbolContextCommand(context, logger);
-  registerRustCodeSenseFeatures(context, logger);
+    registerGenerateMentalModelCommentCommand(context, logger);
+    registerShowRustGraphDebugViewCommand(context, logger);
+    registerShowRustSymbolContextCommand(context, logger);
+    registerRustCodeSenseFeatures(context, logger);
 
-  logger.info("Semantic CodeSense activated successfully.");
+    logger.info("Semantic CodeSense activated successfully.");
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown activation failure.";
+    logger.error(`Semantic CodeSense activation failed: ${message}`);
+    void vscode.window.showErrorMessage(
+      `Semantic CodeSense failed to activate: ${message}`
+    );
+  }
 }
 
 export function deactivate(): void {}

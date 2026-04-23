@@ -96,6 +96,16 @@
           "type": "boolean",
           "default": false,
           "description": "Show placeholder CodeLens actions above supported Rust symbols."
+        },
+        "semanticCodesense.ollamaBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL for the local Ollama server used for semantic summaries."
+        },
+        "semanticCodesense.ollamaModel": {
+          "type": "string",
+          "default": "qwen3-coder:30b",
+          "description": "Ollama model name to use for semantic summaries."
         }
       }
     }
