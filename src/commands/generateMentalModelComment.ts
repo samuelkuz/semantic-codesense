@@ -1,9 +1,15 @@
 import * as vscode from "vscode";
 
+import { createAnalysisOrchestrator } from "../analysis/analysisOrchestrator";
 import { getExtensionConfiguration } from "../core/configuration";
 import type { Logger } from "../core/logger";
+import { EvidenceRepository } from "../evidence/evidenceRepository";
 import { collectRustSymbolContextReport } from "../features/rust/rustSymbolContextCollector";
+import { createRustEvidenceRetriever } from "../features/rust/rustEvidenceRetriever";
 import { createCommentGenerationService } from "../services/commentGenerationService";
+import { createHypothesisGenerationService } from "../services/hypothesisGenerationService";
+import { createEvidenceRanker } from "../ranking/evidenceRanker";
+import { createRetrievalPlanner } from "../retrieval/retrievalPlanner";
 
 export const GENERATE_MENTAL_MODEL_COMMENT_COMMAND =
   "semantic-codesense.generateMentalModelComment";
@@ -12,9 +18,14 @@ export function registerGenerateMentalModelCommentCommand(
   context: vscode.ExtensionContext,
   logger: Logger
 ): void {
+  const configuration = getExtensionConfiguration();
   const service = createCommentGenerationService(
     logger,
-    getExtensionConfiguration()
+    configuration
+  );
+  const hypothesisGenerator = createHypothesisGenerationService(
+    logger,
+    configuration
   );
 
   const disposable = vscode.commands.registerCommand(
@@ -79,10 +90,38 @@ export function registerGenerateMentalModelCommentCommand(
               `Resolved target symbol for generation: ${report.targetNode.kind} "${report.targetNode.name}" in module "${report.targetNode.modulePath}".`
             );
 
+            progress.report({ message: "Running bounded analysis loop..." });
+            logger.info("Running bounded analysis loop before final summarization.");
+            const evidenceRepository = new EvidenceRepository(report.evidenceStore);
+            const analysisOrchestrator = createAnalysisOrchestrator(
+              hypothesisGenerator,
+              createRetrievalPlanner(),
+              createRustEvidenceRetriever(evidenceRepository),
+              createEvidenceRanker()
+            );
+            const analysis = await analysisOrchestrator.analyze({
+              targetNode: report.targetNode,
+              initialEvidence: report.evidenceArtifacts
+            });
+            const enrichedReport = {
+              ...report,
+              evidenceArtifacts: analysis.allEvidence,
+              rankedEvidence: analysis.rankedEvidence,
+              finalDraft: analysis.finalDraft,
+              draftsByRound: analysis.draftsByRound,
+              executedActionsByRound: analysis.executedActionsByRound,
+              stopReason: analysis.stopReason,
+              analysis
+            };
+
+            logger.info(
+              `Analysis loop completed for ${report.targetNode.name}: stopReason=${analysis.stopReason}, drafts=${analysis.draftsByRound.length}, rankedArtifacts=${analysis.rankedEvidence.length}.`
+            );
+
             const focusText =
               editor.document.getText(editor.selection).trim() ||
-              report.targetNode.signature ||
-              report.targetNode.name;
+              enrichedReport.targetNode.signature ||
+              enrichedReport.targetNode.name;
 
             progress.report({ message: "Requesting Ollama summary..." });
             logger.info("Requesting semantic summary from Ollama.");
@@ -90,10 +129,12 @@ export function registerGenerateMentalModelCommentCommand(
               documentUri: editor.document.uri.toString(),
               sourceText: editor.document.getText(),
               focusText,
-              targetNode: report.targetNode,
-              context: report.symbolContext,
-              graph: report.graph,
-              contextMarkdown: report.markdown
+              targetNode: enrichedReport.targetNode,
+              context: enrichedReport.symbolContext,
+              graph: enrichedReport.graph,
+              evidenceArtifacts: enrichedReport.rankedEvidence?.map(
+                (rankedArtifact) => rankedArtifact.artifact
+              ) ?? enrichedReport.evidenceArtifacts
             });
 
             logger.info(

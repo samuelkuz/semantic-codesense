@@ -1,4 +1,5 @@
 import type { Logger } from "../core/logger";
+import type { EvidenceArtifact } from "../types/evidence";
 import type {
   RepositoryGraph,
   SymbolContext,
@@ -12,7 +13,7 @@ export interface CommentGenerationRequest {
   targetNode: SymbolNode;
   context?: SymbolContext;
   graph?: RepositoryGraph;
-  contextMarkdown?: string;
+  evidenceArtifacts?: EvidenceArtifact[];
 }
 
 export interface CommentGenerationResult {
@@ -137,7 +138,7 @@ class OllamaCommentGenerationService
       const rawResponse = payload.response?.trim();
 
       this.logger.debug(
-        `Ollama response body preview: ${truncateForLog(rawResponse ?? payload.error ?? "<empty>", 1200)}`
+        `Ollama response body preview: ${truncateForLog(rawResponse ?? payload.error ?? "<empty>", 3000)}`
       );
 
       if (!rawResponse) {
@@ -224,8 +225,8 @@ function buildPrompt(request: CommentGenerationRequest): string {
     schema,
     "",
     `Target symbol: ${request.targetNode.kind} ${request.targetNode.name}`,
-    request.contextMarkdown
-      ? ["Provided Rust context report:", request.contextMarkdown].join("\n\n")
+    request.evidenceArtifacts && request.evidenceArtifacts.length > 0
+      ? ["Collected evidence artifacts:", formatEvidenceArtifactsForPrompt(request.evidenceArtifacts)].join("\n\n")
       : `Focused code:\n\n${request.focusText}`
   ].join("\n");
 }
@@ -333,4 +334,26 @@ function truncateForLog(value: string, maxLength: number): string {
   }
 
   return `${value.slice(0, maxLength)}...`;
+}
+
+function formatEvidenceArtifactsForPrompt(
+  evidenceArtifacts: EvidenceArtifact[]
+): string {
+  return evidenceArtifacts
+    .map((artifact) => {
+      const metadata = artifact.metadata
+        ? Object.entries(artifact.metadata)
+            .map(([key, value]) => `${key}=${String(value)}`)
+            .join(", ")
+        : undefined;
+
+      return [
+        `### ${artifact.kind}: ${artifact.title}`,
+        metadata ? `Metadata: ${metadata}` : undefined,
+        artifact.content
+      ]
+        .filter((section): section is string => section !== undefined)
+        .join("\n");
+    })
+    .join("\n\n");
 }

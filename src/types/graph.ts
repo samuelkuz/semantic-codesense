@@ -26,6 +26,15 @@ export interface SymbolNode {
   language?: SupportedLanguage;
 }
 
+export interface SymbolRef {
+  id: string;
+  name: string;
+  kind: SymbolKind;
+  filePath?: string;
+  modulePath?: string;
+  language?: SupportedLanguage;
+}
+
 export interface Edge {
   from: string;
   to: string;
