@@ -4,7 +4,7 @@ import type { DraftHypothesis, UnknownPriority, UnknownQuestion } from "../types
 import type { EvidenceRanker, RankedEvidence } from "../types/ranking";
 
 const TARGET_ARTIFACT_COUNT = 8;
-const MAX_ARTIFACT_COUNT = 10;
+const MAX_ARTIFACT_COUNT = 12;
 
 const UNKNOWN_PRIORITY_SCORES: Record<UnknownPriority, number> = {
   high: 28,
@@ -45,13 +45,39 @@ export class DeterministicEvidenceRanker implements EvidenceRanker {
     const remaining = scoredEvidence
       .filter((entry) => entry.artifact.kind !== "target_definition")
       .sort(compareRankedEvidence);
+    const requiredDependencies = selectRequiredDependencyEvidence(
+      remaining,
+      draft
+    ).slice(0, MAX_ARTIFACT_COUNT - (targetDefinition ? 1 : 0));
+    const requiredArtifactIds = new Set(
+      requiredDependencies.map((entry) => entry.artifact.id)
+    );
+    const fillCandidates = remaining.filter(
+      (entry) => !requiredArtifactIds.has(entry.artifact.id)
+    );
     const budget = Math.min(
       Math.min(evidence.length, MAX_ARTIFACT_COUNT),
-      Math.max(TARGET_ARTIFACT_COUNT, targetDefinition ? 1 : 0)
+      Math.max(
+        TARGET_ARTIFACT_COUNT,
+        (targetDefinition ? 1 : 0) + requiredDependencies.length
+      )
     );
     const rankedResults = targetDefinition
-      ? [targetDefinition, ...remaining.slice(0, Math.max(budget - 1, 0))]
-      : remaining.slice(0, budget);
+      ? [
+          targetDefinition,
+          ...requiredDependencies,
+          ...fillCandidates.slice(
+            0,
+            Math.max(budget - 1 - requiredDependencies.length, 0)
+          )
+        ]
+      : [
+          ...requiredDependencies,
+          ...fillCandidates.slice(
+            0,
+            Math.max(budget - requiredDependencies.length, 0)
+          )
+        ];
 
     return rankedResults.sort(compareRankedEvidence);
   }
@@ -115,6 +141,34 @@ function scoreArtifact(
   };
 }
 
+function selectRequiredDependencyEvidence(
+  rankedEvidence: RankedEvidence[],
+  draft: DraftHypothesis
+): RankedEvidence[] {
+  if (draft.likelyImportantDependencies.length === 0) {
+    return [];
+  }
+
+  const dependencyIds = new Set(draft.likelyImportantDependencies);
+  const selectedByDependencyId = new Map<string, RankedEvidence>();
+
+  for (const entry of rankedEvidence) {
+    const nodeId = getMetadataString(entry.artifact, "nodeId");
+
+    if (!nodeId || !dependencyIds.has(nodeId)) {
+      continue;
+    }
+
+    const existing = selectedByDependencyId.get(nodeId);
+
+    if (!existing || compareRankedEvidence(entry, existing) < 0) {
+      selectedByDependencyId.set(nodeId, entry);
+    }
+  }
+
+  return [...selectedByDependencyId.values()].sort(compareRankedEvidence);
+}
+
 function scoreDirectReference(
   ref: SymbolRef,
   artifact: EvidenceArtifact,
@@ -127,9 +181,17 @@ function scoreDirectReference(
   const nodeId = getMetadataString(artifact, "nodeId");
   const retrievalActionType = getMetadataString(artifact, "retrievalActionType");
   const symbolKind = getMetadataString(artifact, "symbolKind");
+  const relationship = getMetadataString(artifact, "relationship");
 
   if (nodeId && draft.likelyImportantDependencies.includes(nodeId)) {
     return 26;
+  }
+
+  if (
+    relationship === "helper_related_type" ||
+    relationship === "helper_trait_impl"
+  ) {
+    return 24;
   }
 
   if (

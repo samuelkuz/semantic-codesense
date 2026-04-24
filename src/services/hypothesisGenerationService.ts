@@ -20,6 +20,7 @@ export interface HypothesisGenerationResult {
   message: string;
   draft?: DraftHypothesis;
   rawResponse?: string;
+  prompt?: string;
 }
 
 export interface HypothesisGenerationService {
@@ -166,7 +167,8 @@ class OllamaHypothesisGenerationService
         );
         return {
           status: "error",
-          message: `Ollama request failed with HTTP ${response.status}.`
+          message: `Ollama request failed with HTTP ${response.status}.`,
+          prompt
         };
       }
 
@@ -183,7 +185,8 @@ class OllamaHypothesisGenerationService
         );
         return {
           status: "error",
-          message: payload.error || "Ollama returned an empty response."
+          message: payload.error || "Ollama returned an empty response.",
+          prompt
         };
       }
 
@@ -196,7 +199,8 @@ class OllamaHypothesisGenerationService
         return {
           status: "error",
           message: "Ollama returned a draft hypothesis that could not be parsed as JSON.",
-          rawResponse
+          rawResponse,
+          prompt
         };
       }
 
@@ -222,7 +226,8 @@ class OllamaHypothesisGenerationService
         return {
           status: "error",
           message: "Ollama returned a draft hypothesis that did not match the required schema.",
-          rawResponse
+          rawResponse,
+          prompt
         };
       }
 
@@ -236,7 +241,8 @@ class OllamaHypothesisGenerationService
         status: "success",
         message: `Generated draft hypothesis for ${request.targetNode.kind} "${request.targetNode.name}".`,
         draft: validation.value,
-        rawResponse
+        rawResponse,
+        prompt
       };
     } catch (error) {
       const message =
@@ -247,7 +253,8 @@ class OllamaHypothesisGenerationService
 
       return {
         status: "error",
-        message: `Failed to reach Ollama at ${ollamaBaseUrl}: ${message}`
+        message: `Failed to reach Ollama at ${ollamaBaseUrl}: ${message}`,
+        prompt
       };
     }
   }

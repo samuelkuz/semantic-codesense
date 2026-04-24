@@ -120,7 +120,9 @@ test("retrieval planner avoids requests already satisfied by evidence", () => {
     }),
     [
       createArtifact("artifact-target", "target_definition", "explain", "explain"),
-      createArtifact("artifact-helper", "helper_definition", "helper", "helper"),
+      createArtifact("artifact-helper", "helper_definition", "helper", "helper", {
+        retrievalActionType: "fetch_helper_definition"
+      }),
       createArtifact("artifact-call-site", "call_site", "call site", "explain"),
       createArtifact("artifact-field", "field_access", "cache", "cache")
     ]
@@ -130,6 +132,36 @@ test("retrieval planner avoids requests already satisfied by evidence", () => {
     {
       type: "fetch_callers",
       priority: "medium"
+    }
+  ]);
+});
+
+test("retrieval planner still fetches helper details when only initial collector snippets exist", () => {
+  const planner = createRetrievalPlanner();
+  const actions = planner.plan(
+    createSymbolRef(),
+    createDraftHypothesis({
+      unknowns: [
+        {
+          kind: "missing_helper_logic",
+          question: "What does classify do?",
+          targetSymbolName: "classify",
+          priority: "high",
+          evidenceArtifactIds: ["artifact-target"]
+        }
+      ]
+    }),
+    [
+      createArtifact("artifact-target", "target_definition", "explain", "explain"),
+      createArtifact("artifact-helper", "helper_definition", "classify", "classify")
+    ]
+  );
+
+  assert.deepEqual(actions, [
+    {
+      type: "fetch_helper_definition",
+      targetName: "classify",
+      priority: "high"
     }
   ]);
 });

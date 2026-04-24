@@ -139,6 +139,7 @@ test("hypothesis generation service includes the prompt contract and artifact id
     receivedPrompt,
     /Copy dependency IDs exactly from the provided candidate list; do not rewrite, shorten, normalize, or invent IDs\./i
   );
+  assert.equal(result.prompt, receivedPrompt);
   assert.deepEqual(result.draft?.evidenceArtifactIds, ["artifact-1", "artifact-2"]);
   assert.match(result.draft?.evidenceSnapshotId ?? "", /^evidence-snapshot:/);
   assert.deepEqual(result.draft?.likelyImportantDependencies, [

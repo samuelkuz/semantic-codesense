@@ -202,7 +202,7 @@ function hasEquivalentEvidence(
 ): boolean {
   switch (action.type) {
     case "fetch_helper_definition":
-      return hasArtifactForTarget(currentEvidence, "helper_definition", action.targetName);
+      return hasRetrievedHelperEvidenceForTarget(currentEvidence, action.targetName);
     case "fetch_type_definition":
       return hasArtifactForTarget(currentEvidence, "type_definition", action.targetName);
     case "fetch_call_sites":
@@ -216,6 +216,37 @@ function hasEquivalentEvidence(
     default:
       return false;
   }
+}
+
+function hasRetrievedHelperEvidenceForTarget(
+  currentEvidence: EvidenceArtifact[],
+  targetName?: string
+): boolean {
+  const normalizedTargetName = normalizeName(targetName);
+
+  return currentEvidence.some((artifact) => {
+    if (artifact.kind !== "helper_definition") {
+      return false;
+    }
+
+    const retrievalActionType = normalizeName(artifact.metadata?.retrievalActionType);
+
+    if (retrievalActionType !== "fetch_helper_definition") {
+      return false;
+    }
+
+    if (!normalizedTargetName) {
+      return true;
+    }
+
+    const artifactSymbolName = normalizeName(artifact.metadata?.symbolName);
+
+    if (artifactSymbolName === normalizedTargetName) {
+      return true;
+    }
+
+    return normalizeName(artifact.title).includes(normalizedTargetName);
+  });
 }
 
 function hasArtifactForTarget(

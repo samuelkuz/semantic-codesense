@@ -32,15 +32,20 @@ export class DefaultAnalysisOrchestrator implements AnalysisOrchestrator {
     const ref = createSymbolRef(request);
     const allEvidence = [...request.initialEvidence];
     const draftsByRound: DraftHypothesis[] = [];
+    const hypothesisPromptsByRound: string[] = [];
     const executedActionsByRound: RetrievalAction[][] = [];
     const rounds: AnalysisRoundResult[] = [];
 
-    let currentDraft = await generateDraftOrThrow(
+    let draftResult = await generateDraftOrThrow(
       this.hypothesisGenerator,
       request.targetNode,
       allEvidence
     );
+    let currentDraft = draftResult.draft;
     draftsByRound.push(currentDraft);
+    if (draftResult.prompt) {
+      hypothesisPromptsByRound.push(draftResult.prompt);
+    }
 
     let stopReason: AnalysisStopReason | undefined;
 
@@ -86,12 +91,16 @@ export class DefaultAnalysisOrchestrator implements AnalysisOrchestrator {
       }
 
       allEvidence.push(...retrievedArtifacts);
-      currentDraft = await generateDraftOrThrow(
+      draftResult = await generateDraftOrThrow(
         this.hypothesisGenerator,
         request.targetNode,
         allEvidence
       );
+      currentDraft = draftResult.draft;
       draftsByRound.push(currentDraft);
+      if (draftResult.prompt) {
+        hypothesisPromptsByRound.push(draftResult.prompt);
+      }
     }
 
     const resolvedStopReason =
@@ -111,7 +120,8 @@ export class DefaultAnalysisOrchestrator implements AnalysisOrchestrator {
       executedActionsByRound,
       draftsByRound,
       rounds,
-      stopReason: resolvedStopReason
+      stopReason: resolvedStopReason,
+      hypothesisPromptsByRound
     };
   }
 }
@@ -134,7 +144,10 @@ async function generateDraftOrThrow(
   hypothesisGenerator: HypothesisGenerationService,
   targetNode: HypothesisGenerationRequest["targetNode"],
   evidenceArtifacts: EvidenceArtifact[]
-): Promise<DraftHypothesis> {
+): Promise<{
+  draft: DraftHypothesis;
+  prompt?: string;
+}> {
   const result = await hypothesisGenerator.generateDraft({
     targetNode,
     evidenceArtifacts
@@ -144,7 +157,10 @@ async function generateDraftOrThrow(
     throw new Error(result.message);
   }
 
-  return result.draft;
+  return {
+    draft: result.draft,
+    prompt: result.prompt
+  };
 }
 
 function createSymbolRef(request: AnalysisLoopRequest): SymbolRef {

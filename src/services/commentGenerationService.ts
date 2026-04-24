@@ -1,10 +1,15 @@
 import type { Logger } from "../core/logger";
 import type { EvidenceArtifact } from "../types/evidence";
 import type {
+  AnalysisRoundResult,
+  AnalysisStopReason
+} from "../types/analysis";
+import type {
   RepositoryGraph,
   SymbolContext,
   SymbolNode
 } from "../types/graph";
+import type { DraftHypothesis } from "../types/hypothesis";
 
 export interface CommentGenerationRequest {
   documentUri: string;
@@ -14,6 +19,9 @@ export interface CommentGenerationRequest {
   context?: SymbolContext;
   graph?: RepositoryGraph;
   evidenceArtifacts?: EvidenceArtifact[];
+  finalHypothesis?: DraftHypothesis;
+  retrievalRounds?: AnalysisRoundResult[];
+  analysisStopReason?: AnalysisStopReason;
 }
 
 export interface CommentGenerationResult {
@@ -21,6 +29,7 @@ export interface CommentGenerationResult {
   message: string;
   markdown?: string;
   rawResponse?: string;
+  prompt?: string;
 }
 
 export interface CommentGenerationService {
@@ -72,9 +81,11 @@ Your job:
 
 Rules:
 - Only use the provided code/context.
+- Use the structured sections below as the primary source of truth.
 - If a dependency's behavior is unclear, say so.
 - Be concrete, not generic.
 - Mention side effects, mutation, IO, concurrency, and error handling if present.
+- If the final hypothesis and retrieved evidence disagree, prefer the evidence and call out the uncertainty.
 
 Output format:
 - One sentence summary
@@ -130,7 +141,8 @@ class OllamaCommentGenerationService
         );
         return {
           status: "error",
-          message: `Ollama request failed with HTTP ${response.status}.`
+          message: `Ollama request failed with HTTP ${response.status}.`,
+          prompt
         };
       }
 
@@ -147,7 +159,8 @@ class OllamaCommentGenerationService
         );
         return {
           status: "error",
-          message: payload.error || "Ollama returned an empty response."
+          message: payload.error || "Ollama returned an empty response.",
+          prompt
         };
       }
 
@@ -160,7 +173,8 @@ class OllamaCommentGenerationService
         return {
           status: "error",
           message: "Ollama returned a response that could not be parsed as JSON.",
-          rawResponse
+          rawResponse,
+          prompt
         };
       }
 
@@ -168,7 +182,8 @@ class OllamaCommentGenerationService
         status: "success",
         message: `Generated semantic summary for ${request.targetNode.kind} "${request.targetNode.name}".`,
         markdown: renderSemanticSummaryMarkdown(request, summary),
-        rawResponse
+        rawResponse,
+        prompt
       };
     } catch (error) {
       const message =
@@ -179,7 +194,8 @@ class OllamaCommentGenerationService
 
       return {
         status: "error",
-        message: `Failed to reach Ollama at ${ollamaBaseUrl}: ${message}`
+        message: `Failed to reach Ollama at ${ollamaBaseUrl}: ${message}`,
+        prompt
       };
     }
   }
@@ -225,10 +241,183 @@ function buildPrompt(request: CommentGenerationRequest): string {
     schema,
     "",
     `Target symbol: ${request.targetNode.kind} ${request.targetNode.name}`,
+    "",
+    "## Target symbol",
+    formatTargetNodeForPrompt(request.targetNode),
+    "",
+    "## Focused code",
+    request.focusText,
+    "",
+    "## Symbol context",
+    formatSymbolContextForPrompt(request.context),
+    "",
+    "## Selected graph neighbors",
+    formatGraphNeighborsForPrompt(request.graph, request.targetNode.id),
+    "",
+    "## Final hypothesis",
+    formatFinalHypothesisForPrompt(request.finalHypothesis),
+    "",
+    "## Retrieval history",
+    formatRetrievalHistoryForPrompt(
+      request.retrievalRounds,
+      request.analysisStopReason
+    ),
+    "",
     request.evidenceArtifacts && request.evidenceArtifacts.length > 0
-      ? ["Collected evidence artifacts:", formatEvidenceArtifactsForPrompt(request.evidenceArtifacts)].join("\n\n")
-      : `Focused code:\n\n${request.focusText}`
+      ? ["## Collected evidence artifacts", formatEvidenceArtifactsForPrompt(request.evidenceArtifacts)].join("\n\n")
+      : ["## Source document excerpt", request.sourceText].join("\n\n")
   ].join("\n");
+}
+
+function formatTargetNodeForPrompt(targetNode: SymbolNode): string {
+  return [
+    `ID: ${targetNode.id}`,
+    `Kind: ${targetNode.kind}`,
+    `Name: ${targetNode.name}`,
+    `Module: ${targetNode.modulePath}`,
+    `File: ${targetNode.filePath}`,
+    `Span: ${targetNode.span.startLine}-${targetNode.span.endLine}`,
+    targetNode.signature ? `Signature: ${targetNode.signature}` : undefined,
+    targetNode.docs ? `Docs: ${targetNode.docs}` : undefined
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+}
+
+function formatSymbolContextForPrompt(context: SymbolContext | undefined): string {
+  if (!context) {
+    return "No symbol context available.";
+  }
+
+  return [
+    formatNodeCollection("Parents", context.parents),
+    formatNodeCollection("Children", context.children),
+    formatNodeCollection("Callers", context.callers),
+    formatNodeCollection("Callees", context.callees),
+    formatNodeCollection("Related types", context.relatedTypes),
+    formatNodeCollection("Imported symbols", context.importedSymbols),
+    formatEdgeCollection("Outgoing edges", context.outgoingEdges),
+    formatEdgeCollection("Incoming edges", context.incomingEdges)
+  ].join("\n\n");
+}
+
+function formatGraphNeighborsForPrompt(
+  graph: RepositoryGraph | undefined,
+  targetNodeId: string
+): string {
+  if (!graph) {
+    return "No graph data available.";
+  }
+
+  const neighborIds = new Set<string>();
+
+  for (const edge of graph.edges) {
+    if (edge.from === targetNodeId) {
+      neighborIds.add(edge.to);
+    }
+
+    if (edge.to === targetNodeId) {
+      neighborIds.add(edge.from);
+    }
+  }
+
+  const neighborNodes = [...neighborIds]
+    .map((nodeId) => graph.nodes.find((node) => node.id === nodeId))
+    .filter((node): node is SymbolNode => node !== undefined)
+    .slice(0, 12);
+
+  if (neighborNodes.length === 0) {
+    return "No direct graph neighbors available.";
+  }
+
+  return neighborNodes
+    .map((node) => {
+      const connectingEdges = graph.edges
+        .filter(
+          (edge) =>
+            (edge.from === targetNodeId && edge.to === node.id) ||
+            (edge.to === targetNodeId && edge.from === node.id)
+        )
+        .map((edge) =>
+          edge.from === targetNodeId
+            ? `${edge.kind} -> ${node.name}`
+            : `${node.name} -> ${edge.kind}`
+        );
+
+      return [
+        `- ${node.kind} \`${node.name}\` (${node.modulePath})`,
+        `  id=${node.id}`,
+        `  edges=${connectingEdges.join(", ")}`
+      ].join("\n");
+    })
+    .join("\n");
+}
+
+function formatFinalHypothesisForPrompt(
+  finalHypothesis: DraftHypothesis | undefined
+): string {
+  if (!finalHypothesis) {
+    return "No final hypothesis available.";
+  }
+
+  return [
+    `Evidence snapshot: ${finalHypothesis.evidenceSnapshotId}`,
+    `Confidence: ${finalHypothesis.confidence}`,
+    finalHypothesis.purpose ? `Purpose: ${finalHypothesis.purpose}` : undefined,
+    `Key behavior: ${formatInlineList(finalHypothesis.keyBehavior)}`,
+    `Side effects: ${formatInlineList(finalHypothesis.sideEffects)}`,
+    `Likely important dependencies: ${formatInlineList(finalHypothesis.likelyImportantDependencies)}`,
+    finalHypothesis.unknowns.length > 0
+      ? [
+          "Unknowns:",
+          ...finalHypothesis.unknowns.map(
+            (unknown) =>
+              `- [${unknown.priority}] ${unknown.kind}: ${unknown.question} (target=${unknown.targetSymbolName ?? "n/a"}, evidence=${unknown.evidenceArtifactIds.join(", ") || "none"})`
+          )
+        ].join("\n")
+      : "Unknowns: none"
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+}
+
+function formatRetrievalHistoryForPrompt(
+  retrievalRounds: AnalysisRoundResult[] | undefined,
+  analysisStopReason: AnalysisStopReason | undefined
+): string {
+  if (!retrievalRounds || retrievalRounds.length === 0) {
+    return analysisStopReason
+      ? `No retrieval rounds recorded. Stop reason: ${analysisStopReason}`
+      : "No retrieval rounds recorded.";
+  }
+
+  return [
+    analysisStopReason ? `Stop reason: ${analysisStopReason}` : undefined,
+    ...retrievalRounds.map((round) =>
+      [
+        `Round ${round.round}: draftConfidence=${round.draft.confidence}`,
+        `  plannedActions=${
+          round.plannedActions.length > 0
+            ? round.plannedActions
+                .map(
+                  (action) =>
+                    `${action.type}${action.targetName ? `(${action.targetName})` : ""}:${action.priority}`
+                )
+                .join(", ")
+            : "none"
+        }`,
+        `  retrievedArtifacts=${
+          round.retrievedArtifacts.length > 0
+            ? round.retrievedArtifacts
+                .map((artifact) => `${artifact.kind}:${artifact.id}`)
+                .join(", ")
+            : "none"
+        }`
+      ].join("\n")
+    )
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n\n");
 }
 
 function parseSemanticSummary(
@@ -356,4 +545,31 @@ function formatEvidenceArtifactsForPrompt(
         .join("\n");
     })
     .join("\n\n");
+}
+
+function formatNodeCollection(label: string, nodes: SymbolNode[]): string {
+  return `${label}: ${
+    nodes.length > 0
+      ? nodes
+          .map((node) => `${node.kind} \`${node.name}\` [${node.id}]`)
+          .join(", ")
+      : "none"
+  }`;
+}
+
+function formatEdgeCollection(
+  label: string,
+  edges: RepositoryGraph["edges"]
+): string {
+  return `${label}: ${
+    edges.length > 0
+      ? edges
+          .map((edge) => `${edge.from} -${edge.kind}-> ${edge.to}`)
+          .join(", ")
+      : "none"
+  }`;
+}
+
+function formatInlineList(items: string[]): string {
+  return items.length > 0 ? items.join("; ") : "none";
 }

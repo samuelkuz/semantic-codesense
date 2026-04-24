@@ -153,6 +153,145 @@ test("evidence ranker boosts likely important dependencies and purpose relevance
   assert.match(helper.rationale, /purpose-side-effects|side-effect-proxy/);
 });
 
+test("evidence ranker boosts helper-linked trait impls and related custom types", () => {
+  const ranker = createEvidenceRanker();
+  const ranked = ranker.rank(
+    createSymbolRef(),
+    [
+      createArtifact("target", "target_definition", "target", "fn build_review_digest() {}"),
+      createArtifact(
+        "helper",
+        "helper_definition",
+        "classify",
+        "fn classify(&self, score: u8) -> ReviewDecision;",
+        {
+          symbolName: "classify"
+        }
+      ),
+      createArtifact(
+        "trait-impl",
+        "trait_impl",
+        "impl ReviewPlanner for WeightedReviewPlanner",
+        "impl ReviewPlanner for WeightedReviewPlanner { fn classify(...) -> ReviewDecision { ... } }",
+        {
+          symbolName: "ReviewPlanner",
+          relationship: "helper_trait_impl",
+          sourceHelperName: "classify"
+        }
+      ),
+      createArtifact(
+        "related-type",
+        "type_definition",
+        "ReviewDecision",
+        "pub struct ReviewDecision { risk_score: u8 }",
+        {
+          symbolName: "ReviewDecision",
+          relationship: "helper_related_type",
+          sourceHelperName: "classify"
+        }
+      )
+    ],
+    createDraftHypothesis({
+      purpose: "Classify review risk and produce a ReviewDecision."
+    })
+  );
+
+  const traitImpl = ranked.find((entry) => entry.artifact.id === "trait-impl");
+  const relatedType = ranked.find((entry) => entry.artifact.id === "related-type");
+  const helper = ranked.find((entry) => entry.artifact.id === "helper");
+
+  assert.ok(traitImpl && relatedType && helper);
+  assert.ok(traitImpl.score > helper.score);
+  assert.ok(relatedType.score > helper.score);
+  assert.match(traitImpl.rationale, /direct-reference/);
+  assert.match(relatedType.rationale, /direct-reference/);
+});
+
+test("evidence ranker preserves likely dependency implementations under prompt budget", () => {
+  const ranker = createEvidenceRanker();
+  const classifyId = "rust:/tmp/review.rs:review:method:classify:27";
+  const implId = "rust:/tmp/review.rs:review:impl:impl ReviewPlanner for WeightedReviewPlanner:103";
+  const selectLaneId = "rust:/tmp/review.rs:review:function:select_review_lane:144";
+
+  const ranked = ranker.rank(
+    createSymbolRef(),
+    [
+      createArtifact("target", "target_definition", "build_review_digest", "fn build_review_digest() {}"),
+      createArtifact("classify", "helper_definition", "classify", "fn classify(&self) -> ReviewDecision;", {
+        nodeId: classifyId,
+        symbolName: "classify"
+      }),
+      createArtifact(
+        "select-lane",
+        "helper_definition",
+        "select_review_lane",
+        "pub fn select_review_lane(decision: &ReviewDecision, profile: &OpsProfile) -> String { \"senior-ops\".to_string() }",
+        {
+          nodeId: selectLaneId,
+          symbolName: "select_review_lane"
+        }
+      ),
+      createArtifact(
+        "trait-impl",
+        "trait_impl",
+        "impl ReviewPlanner for WeightedReviewPlanner",
+        "impl ReviewPlanner for WeightedReviewPlanner { fn classify(&self) -> ReviewDecision { ReviewDecision { risk_score: 80 } } }",
+        {
+          nodeId: implId,
+          symbolName: "impl ReviewPlanner for WeightedReviewPlanner",
+          relationship: "helper_trait_impl",
+          sourceHelperName: "classify"
+        }
+      ),
+      createArtifact("review-decision-1", "type_definition", "ReviewDecision", "pub struct ReviewDecision { risk_score: u8 }", {
+        nodeId: "rust:/tmp/review.rs:review:struct:ReviewDecision:4",
+        relationship: "helper_related_type",
+        sourceHelperName: "classify"
+      }),
+      createArtifact("review-decision-2", "type_definition", "ReviewDecision", "pub struct ReviewDecision { risk_score: u8 }", {
+        nodeId: "rust:/tmp/review.rs:review:struct:ReviewDecision:4",
+        relationship: "helper_related_type",
+        sourceHelperName: "select_review_lane"
+      }),
+      createArtifact("ops-profile-1", "type_definition", "OpsProfile", "pub struct OpsProfile { fallback_lane: String }", {
+        nodeId: "rust:/tmp/review.rs:review:struct:OpsProfile:20",
+        relationship: "helper_related_type",
+        sourceHelperName: "select_review_lane"
+      }),
+      createArtifact("order", "type_definition", "Order", "pub struct Order { id: String }", {
+        nodeId: "rust:/tmp/domain.rs:domain:struct:Order:45"
+      }),
+      createArtifact("warehouse", "type_definition", "Warehouse", "pub struct Warehouse { inventory: HashMap<String, u32> }", {
+        nodeId: "rust:/tmp/domain.rs:domain:struct:Warehouse:102"
+      }),
+      createArtifact("trait", "type_definition", "ReviewPlanner", "pub trait ReviewPlanner { fn classify(&self) -> ReviewDecision; }", {
+        nodeId: "rust:/tmp/review.rs:review:trait:ReviewPlanner:26"
+      }),
+      createArtifact("call-site", "call_site", "test", "assert!(digest.contains(\"lane=senior-ops\"));"),
+      createArtifact("doc", "doc_comment", "docs", "Multi-hop symbol.")
+    ],
+    createDraftHypothesis({
+      confidence: "high",
+      likelyImportantDependencies: [
+        classifyId,
+        implId,
+        selectLaneId,
+        "rust:/tmp/review.rs:review:struct:ReviewDecision:4",
+        "rust:/tmp/review.rs:review:struct:OpsProfile:20",
+        "rust:/tmp/domain.rs:domain:struct:Order:45",
+        "rust:/tmp/domain.rs:domain:struct:Warehouse:102",
+        "rust:/tmp/review.rs:review:trait:ReviewPlanner:26"
+      ]
+    })
+  );
+
+  const rankedIds = ranked.map((entry) => entry.artifact.id);
+
+  assert.ok(rankedIds.includes("classify"));
+  assert.ok(rankedIds.includes("select-lane"));
+  assert.ok(rankedIds.includes("trait-impl"));
+});
+
 function createSymbolRef(): SymbolRef {
   return {
     id: "rust:/tmp/example.rs:example:function:explain:1",

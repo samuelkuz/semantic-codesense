@@ -132,6 +132,9 @@ export function registerGenerateMentalModelCommentCommand(
               targetNode: enrichedReport.targetNode,
               context: enrichedReport.symbolContext,
               graph: enrichedReport.graph,
+              finalHypothesis: enrichedReport.finalDraft,
+              retrievalRounds: enrichedReport.analysis?.rounds,
+              analysisStopReason: enrichedReport.stopReason,
               evidenceArtifacts: enrichedReport.rankedEvidence?.map(
                 (rankedArtifact) => rankedArtifact.artifact
               ) ?? enrichedReport.evidenceArtifacts
@@ -140,6 +143,22 @@ export function registerGenerateMentalModelCommentCommand(
             logger.info(
               `Semantic summary generation completed with status "${result.status}".`
             );
+
+            const initialHypothesisPrompt =
+              enrichedReport.analysis?.hypothesisPromptsByRound?.[0];
+            const finalSummaryPrompt = result.prompt;
+
+            if (initialHypothesisPrompt) {
+              logger.debug(
+                `Initial LLM prompt for ${report.targetNode.name}:\n${initialHypothesisPrompt}`
+              );
+            }
+
+            if (finalSummaryPrompt) {
+              logger.debug(
+                `Final LLM prompt for ${report.targetNode.name}:\n${finalSummaryPrompt}`
+              );
+            }
 
             if (result.status !== "success" || !result.markdown) {
               logger.warn(`Semantic summary generation failed: ${result.message}`);
@@ -154,6 +173,20 @@ export function registerGenerateMentalModelCommentCommand(
             });
 
             await vscode.window.showTextDocument(reportDocument, {
+              preview: false,
+              viewColumn: vscode.ViewColumn.Beside
+            });
+
+            const promptDebugDocument = await vscode.workspace.openTextDocument({
+              language: "markdown",
+              content: renderPromptDebugMarkdown(
+                enrichedReport.targetNode.name,
+                initialHypothesisPrompt,
+                finalSummaryPrompt
+              )
+            });
+
+            await vscode.window.showTextDocument(promptDebugDocument, {
               preview: false,
               viewColumn: vscode.ViewColumn.Beside
             });
@@ -173,4 +206,26 @@ export function registerGenerateMentalModelCommentCommand(
   );
 
   context.subscriptions.push(disposable);
+}
+
+function renderPromptDebugMarkdown(
+  symbolName: string,
+  initialHypothesisPrompt: string | undefined,
+  finalSummaryPrompt: string | undefined
+): string {
+  return [
+    `# LLM Prompt Debug: ${symbolName}`,
+    "",
+    "## Initial LLM Prompt",
+    "",
+    initialHypothesisPrompt
+      ? ["```text", initialHypothesisPrompt, "```"].join("\n")
+      : "_No initial hypothesis prompt was captured._",
+    "",
+    "## Final LLM Prompt",
+    "",
+    finalSummaryPrompt
+      ? ["```text", finalSummaryPrompt, "```"].join("\n")
+      : "_No final summary prompt was captured._"
+  ].join("\n");
 }

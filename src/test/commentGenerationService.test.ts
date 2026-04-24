@@ -7,6 +7,7 @@ import {
 } from "../services/commentGenerationService";
 import type { Logger } from "../core/logger";
 import type { EvidenceArtifact } from "../types/evidence";
+import type { AnalysisRoundResult } from "../types/analysis";
 
 class TestLogger implements Logger {
   debug(message: string): void {
@@ -102,6 +103,7 @@ test("comment generation service formats Ollama JSON into markdown", async () =>
   assert.equal(result.status, "success");
   assert.match(result.message, /generated semantic summary/i);
   assert.match(result.markdown ?? "", /Semantic Summary: explain/i);
+  assert.match(result.prompt ?? "", /Target symbol: function explain/i);
   assert.match(result.markdown ?? "", /helper_one/i);
   assert.match(result.markdown ?? "", /main/i);
 });
@@ -163,11 +165,44 @@ test("comment generation service includes typed evidence artifacts in the prompt
       }
     }
   ];
+  const retrievalRounds: AnalysisRoundResult[] = [
+    {
+      round: 1,
+      draft: {
+        evidenceSnapshotId: "evidence-snapshot:round-1",
+        evidenceArtifactIds: ["artifact-1"],
+        purpose: "Explain the symbol.",
+        keyBehavior: ["Delegates setup to helper."],
+        sideEffects: ["Mutates cached state."],
+        confidence: "medium",
+        unknowns: [
+          {
+            kind: "missing_helper_logic",
+            question: "What does helper do internally?",
+            targetSymbolName: "helper",
+            priority: "high",
+            evidenceArtifactIds: ["artifact-2"]
+          }
+        ],
+        likelyImportantDependencies: [
+          "rust:/tmp/example.rs:example:function:helper:5"
+        ]
+      },
+      plannedActions: [
+        {
+          type: "fetch_helper_definition",
+          targetName: "helper",
+          priority: "high"
+        }
+      ],
+      retrievedArtifacts: [evidenceArtifacts[1]]
+    }
+  ];
 
   const request: CommentGenerationRequest = {
     documentUri: "file:///tmp/example.rs",
-    sourceText: "fn explain() {}",
-    focusText: "fn explain() {}",
+    sourceText: "fn explain() -> usize { helper() }",
+    focusText: "fn explain() -> usize { helper() }",
     targetNode: {
       id: "rust:/tmp/example.rs:example:function:explain:1",
       filePath: "/tmp/example.rs",
@@ -181,13 +216,132 @@ test("comment generation service includes typed evidence artifacts in the prompt
       },
       signature: "fn explain() {}"
     },
+    context: {
+      node: {
+        id: "rust:/tmp/example.rs:example:function:explain:1",
+        filePath: "/tmp/example.rs",
+        modulePath: "example",
+        language: "rust",
+        kind: "function",
+        name: "explain",
+        span: {
+          startLine: 1,
+          endLine: 1
+        },
+        signature: "fn explain() {}"
+      },
+      parent: {
+        id: "rust:/tmp/example.rs:example:impl:Example:0",
+        filePath: "/tmp/example.rs",
+        modulePath: "example",
+        language: "rust",
+        kind: "impl",
+        name: "Example",
+        span: {
+          startLine: 0,
+          endLine: 10
+        }
+      },
+      parents: [
+        {
+          id: "rust:/tmp/example.rs:example:impl:Example:0",
+          filePath: "/tmp/example.rs",
+          modulePath: "example",
+          language: "rust",
+          kind: "impl",
+          name: "Example",
+          span: {
+            startLine: 0,
+            endLine: 10
+          }
+        }
+      ],
+      children: [],
+      outgoingEdges: [
+        {
+          from: "rust:/tmp/example.rs:example:function:explain:1",
+          to: "rust:/tmp/example.rs:example:function:helper:5",
+          kind: "calls"
+        }
+      ],
+      incomingEdges: [],
+      callees: [
+        {
+          id: "rust:/tmp/example.rs:example:function:helper:5",
+          filePath: "/tmp/example.rs",
+          modulePath: "example",
+          language: "rust",
+          kind: "function",
+          name: "helper",
+          span: {
+            startLine: 5,
+            endLine: 5
+          },
+          signature: "fn helper() -> usize"
+        }
+      ],
+      callers: [],
+      relatedTypes: [],
+      importedSymbols: []
+    },
+    graph: {
+      language: "rust",
+      filePath: "/tmp/example.rs",
+      rootModuleId: "rust:/tmp/example.rs:example:module:root:1",
+      nodes: [
+        {
+          id: "rust:/tmp/example.rs:example:function:explain:1",
+          filePath: "/tmp/example.rs",
+          modulePath: "example",
+          language: "rust",
+          kind: "function",
+          name: "explain",
+          span: {
+            startLine: 1,
+            endLine: 1
+          }
+        },
+        {
+          id: "rust:/tmp/example.rs:example:function:helper:5",
+          filePath: "/tmp/example.rs",
+          modulePath: "example",
+          language: "rust",
+          kind: "function",
+          name: "helper",
+          span: {
+            startLine: 5,
+            endLine: 5
+          }
+        }
+      ],
+      edges: [
+        {
+          from: "rust:/tmp/example.rs:example:function:explain:1",
+          to: "rust:/tmp/example.rs:example:function:helper:5",
+          kind: "calls"
+        }
+      ]
+    },
+    finalHypothesis: retrievalRounds[0]?.draft,
+    retrievalRounds,
+    analysisStopReason: "max_rounds_reached",
     evidenceArtifacts
   };
 
   const result = await service.generate(request);
 
   assert.equal(result.status, "success");
-  assert.match(receivedPrompt, /Collected evidence artifacts:/);
+  assert.match(receivedPrompt, /## Symbol context/);
+  assert.match(receivedPrompt, /Parents: impl `Example`/);
+  assert.match(receivedPrompt, /## Selected graph neighbors/);
+  assert.match(receivedPrompt, /function `helper` \(example\)/);
+  assert.match(receivedPrompt, /## Final hypothesis/);
+  assert.match(receivedPrompt, /Confidence: medium/);
+  assert.match(receivedPrompt, /Likely important dependencies:/);
+  assert.match(receivedPrompt, /## Retrieval history/);
+  assert.match(receivedPrompt, /Round 1: draftConfidence=medium/);
+  assert.match(receivedPrompt, /fetch_helper_definition\(helper\):high/);
+  assert.match(receivedPrompt, /Collected evidence artifacts/);
   assert.match(receivedPrompt, /target_definition: function `explain`/);
   assert.match(receivedPrompt, /helper_definition: function `helper`/);
   assert.match(receivedPrompt, /Metadata: filePath=\/tmp\/example.rs, startLine=1/);

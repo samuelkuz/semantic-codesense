@@ -8,10 +8,11 @@ import {
   type RetrievalExecutionContext
 } from "../../retrieval/evidenceRetriever";
 import type { EvidenceArtifact, EvidenceMetadata } from "../../types/evidence";
-import type { SymbolKind, SymbolNode, SymbolRef } from "../../types/graph";
+import type { RepositoryGraph, SymbolKind, SymbolNode, SymbolRef } from "../../types/graph";
 import type { EvidenceRetriever, RetrievalAction } from "../../types/retrieval";
 import { inferRustModulePath, loadCargoWorkspaceContext } from "./rustCargoMetadata";
 import { buildRustFileGraph } from "./rustGraphBuilder";
+import { findBestLocalSymbolNodeForLookup } from "./rustLocalSymbolResolver";
 import { parseRustSyntaxFile } from "./rustTreeSitterParser";
 
 type VscodeModule = typeof import("vscode");
@@ -32,6 +33,31 @@ interface ResolvedRustSymbol {
   endLine?: number;
   resolvedBy: "evidence" | "workspace_symbol" | "document_symbol" | "tree_sitter";
 }
+
+const COMMON_TYPE_NAMES = new Set([
+  "Option",
+  "Result",
+  "String",
+  "Vec",
+  "Self",
+  "str",
+  "bool",
+  "i8",
+  "i16",
+  "i32",
+  "i64",
+  "i128",
+  "isize",
+  "u8",
+  "u16",
+  "u32",
+  "u64",
+  "u128",
+  "usize",
+  "f32",
+  "f64"
+]);
+const COMPACT_SNIPPET_MAX_LINES = 80;
 
 export class RustEvidenceRetriever extends BudgetedEvidenceRetriever {
   constructor(
@@ -97,20 +123,42 @@ async function fetchDefinitionArtifacts(
     return [];
   }
 
-  const snippet = await getSnippetForResolvedSymbol(target);
+  const document = await openRustDocument(target.filePath);
+  const sourceText = document?.getText();
+  const matchedNode = sourceText
+    ? findBestLocalSymbolNode(target, sourceText)
+    : undefined;
+  const snippet = document
+    ? getSnippetForResolvedSymbolFromDocument(target, document, matchedNode)
+    : undefined;
 
   if (!snippet) {
     return [];
   }
 
-  return [{
+  const artifacts: RetrievedArtifactCandidate[] = [{
     kind: artifactKind,
     title: `${target.kind ?? "symbol"} \`${target.name}\` in \`${target.filePath}\``,
     content: snippet,
     retrievedBy:
       target.resolvedBy === "tree_sitter" ? "tree_sitter" : "hybrid",
-    metadata: createResolvedSymbolMetadata(target)
+    metadata: createResolvedSymbolMetadata(target, matchedNode)
   }];
+
+  if (artifactKind === "helper_definition" && document && sourceText && matchedNode) {
+    artifacts.push(
+      ...await collectSupplementalHelperArtifacts(
+        context,
+        target,
+        matchedNode,
+        document,
+        sourceText,
+        context.maxArtifacts - artifacts.length
+      )
+    );
+  }
+
+  return artifacts.slice(0, context.maxArtifacts);
 }
 
 async function fetchCallSiteArtifacts(
@@ -513,30 +561,13 @@ async function resolveSymbolInFile(
   };
 }
 
-async function getSnippetForResolvedSymbol(
-  symbol: ResolvedRustSymbol
-): Promise<string | undefined> {
-  const document = await openRustDocument(symbol.filePath);
-
-  if (!document) {
-    return undefined;
-  }
-
-  if (symbol.startLine !== undefined) {
-    const graph = buildRustFileGraph({
-      filePath: symbol.filePath,
-      sourceText: document.getText()
-    });
-    const matchedNode = graph.nodes.find(
-      (node) =>
-        !node.isExternal &&
-        node.name === symbol.name &&
-        node.span.startLine === symbol.startLine
-    );
-
-    if (matchedNode) {
-      return extractNodeSnippet(document, matchedNode, true);
-    }
+function getSnippetForResolvedSymbolFromDocument(
+  symbol: ResolvedRustSymbol,
+  document: VsCodeDocument,
+  matchedNode?: SymbolNode
+): string | undefined {
+  if (matchedNode) {
+    return extractNodeSnippet(document, matchedNode, true);
   }
 
   const fallbackLine = Math.max((symbol.startLine ?? 1) - 1, 0);
@@ -551,8 +582,276 @@ async function getSnippetForResolvedSymbol(
   return extractRangeSnippet(document, range, 20);
 }
 
+async function collectSupplementalHelperArtifacts(
+  context: RetrievalExecutionContext,
+  target: ResolvedRustSymbol,
+  helperNode: SymbolNode,
+  document: VsCodeDocument,
+  sourceText: string,
+  maxArtifacts: number
+): Promise<RetrievedArtifactCandidate[]> {
+  if (maxArtifacts <= 0) {
+    return [];
+  }
+
+  const graph = buildRustFileGraph({
+    filePath: target.filePath,
+    sourceText
+  });
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node] as const));
+  const parentNode = helperNode.parentSymbolId
+    ? nodesById.get(helperNode.parentSymbolId)
+    : undefined;
+  const artifacts: RetrievedArtifactCandidate[] = [];
+
+  if (parentNode?.kind === "trait") {
+    artifacts.push(
+      ...await collectTraitImplArtifactsForHelperMethod(
+        context,
+        parentNode.name,
+        helperNode.name,
+        maxArtifacts - artifacts.length
+      )
+    );
+  }
+
+  if (artifacts.length < maxArtifacts) {
+    artifacts.push(
+      ...await collectRelatedTypeArtifactsForHelper(
+        context,
+        graph,
+        helperNode,
+        document,
+        maxArtifacts - artifacts.length
+      )
+    );
+  }
+
+  return dedupeArtifactCandidates(artifacts).slice(0, maxArtifacts);
+}
+
+async function collectTraitImplArtifactsForHelperMethod(
+  context: RetrievalExecutionContext,
+  traitName: string,
+  methodName: string,
+  maxArtifacts: number
+): Promise<RetrievedArtifactCandidate[]> {
+  if (maxArtifacts <= 0) {
+    return [];
+  }
+
+  const artifacts: RetrievedArtifactCandidate[] = [];
+
+  for (const filePath of collectCandidateFiles(context.ref, context.currentEvidence)) {
+    const document = await openRustDocument(filePath);
+
+    if (!document) {
+      continue;
+    }
+
+    const graph = buildRustFileGraph({
+      filePath,
+      sourceText: document.getText()
+    });
+    const matchingImplNodes = findTraitImplNodesForMethod(
+      graph,
+      traitName,
+      methodName
+    );
+
+    for (const implNode of matchingImplNodes) {
+      const nodesById = new Map(graph.nodes.map((node) => [node.id, node] as const));
+
+      const snippet = extractNodeSnippet(document, implNode, true);
+
+      if (!snippet) {
+        continue;
+      }
+
+      const targetTypeName = graph.edges
+        .filter((edge) => edge.from === implNode.id && edge.kind === "belongs_to")
+        .map((edge) => nodesById.get(edge.to)?.name)
+        .find((name): name is string => typeof name === "string" && name.length > 0);
+      const title = targetTypeName
+        ? `impl ${traitName} for ${targetTypeName}`
+        : implNode.name;
+
+      artifacts.push({
+        kind: "trait_impl",
+        title,
+        content: snippet,
+        retrievedBy: "tree_sitter",
+        groupKey: traitName,
+        metadata: createNodeMetadata(implNode, {
+          relationship: "helper_trait_impl",
+          symbolName: traitName,
+          traitName,
+          targetMethodName: methodName
+        })
+      });
+
+      if (artifacts.length >= maxArtifacts) {
+        return artifacts;
+      }
+    }
+  }
+
+  return artifacts;
+}
+
+async function collectRelatedTypeArtifactsForHelper(
+  context: RetrievalExecutionContext,
+  graph: RepositoryGraph,
+  helperNode: SymbolNode,
+  document: VsCodeDocument,
+  maxArtifacts: number
+): Promise<RetrievedArtifactCandidate[]> {
+  if (maxArtifacts <= 0) {
+    return [];
+  }
+
+  const uniqueTypeNames = getHelperRelatedTypeNames(graph, helperNode);
+  const artifacts: RetrievedArtifactCandidate[] = [];
+
+  for (const typeName of uniqueTypeNames) {
+    const resolvedType = await resolveNamedSymbol(
+      context.ref,
+      context.currentEvidence,
+      typeName,
+      ["struct", "enum", "trait"]
+    );
+
+    if (!resolvedType) {
+      continue;
+    }
+
+    const typeDocument =
+      normalizeFilePath(resolvedType.filePath) ===
+      normalizeFilePath(document.uri.fsPath || document.uri.path)
+        ? document
+        : await openRustDocument(resolvedType.filePath);
+
+    if (!typeDocument) {
+      continue;
+    }
+
+    const sourceText = typeDocument.getText();
+    const matchedNode = findBestLocalSymbolNode(resolvedType, sourceText);
+    const snippet = getSnippetForResolvedSymbolFromDocument(
+      resolvedType,
+      typeDocument,
+      matchedNode
+    );
+
+    if (!snippet) {
+      continue;
+    }
+
+    artifacts.push({
+      kind: "type_definition",
+      title: `${resolvedType.kind ?? "type"} \`${resolvedType.name}\` in \`${resolvedType.filePath}\``,
+      content: snippet,
+      retrievedBy:
+        resolvedType.resolvedBy === "tree_sitter" ? "tree_sitter" : "hybrid",
+      groupKey: resolvedType.name,
+      metadata: {
+        ...createResolvedSymbolMetadata(resolvedType, matchedNode),
+        relationship: "helper_related_type",
+        sourceHelperName: helperNode.name
+      }
+    });
+
+    if (artifacts.length >= maxArtifacts) {
+      break;
+    }
+  }
+
+  return artifacts;
+}
+
+export function findTraitImplNodesForMethod(
+  graph: RepositoryGraph,
+  traitName: string,
+  methodName: string
+): SymbolNode[] {
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node] as const));
+
+  return graph.nodes.filter((implNode) => {
+    if (implNode.kind !== "impl") {
+      return false;
+    }
+
+    const implementedTraitEdge = graph.edges.find(
+      (edge) =>
+        edge.from === implNode.id &&
+        edge.kind === "implements" &&
+        nodesById.get(edge.to)?.name === traitName
+    );
+
+    if (!implementedTraitEdge) {
+      return false;
+    }
+
+    return graph.nodes.some(
+      (node) =>
+        node.parentSymbolId === implNode.id &&
+        node.kind === "method" &&
+        node.name === methodName
+    );
+  });
+}
+
+export function getHelperRelatedTypeNames(
+  graph: RepositoryGraph,
+  helperNode: SymbolNode
+): string[] {
+  const relatedTypeNames = graph.edges
+    .filter((edge): boolean => edge.from === helperNode.id && edge.kind === "uses_type")
+    .map((edge): SymbolNode | undefined => graph.nodes.find((node) => node.id === edge.to))
+    .filter((node): node is SymbolNode => node !== undefined)
+    .filter(
+      (node): boolean =>
+        (node.kind === "struct" || node.kind === "enum" || node.kind === "trait") &&
+        !COMMON_TYPE_NAMES.has(node.name)
+    )
+    .map((node): string => node.name);
+
+  return [...new Set(relatedTypeNames)];
+}
+
+function dedupeArtifactCandidates(
+  artifacts: RetrievedArtifactCandidate[]
+): RetrievedArtifactCandidate[] {
+  const seen = new Set<string>();
+
+  return artifacts.filter((artifact) => {
+    const key = [
+      artifact.kind,
+      String(artifact.metadata?.filePath ?? ""),
+      String(artifact.metadata?.startLine ?? ""),
+      String(artifact.metadata?.symbolName ?? ""),
+      artifact.title
+    ].join(":");
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+export function findBestLocalSymbolNode(
+  symbol: ResolvedRustSymbol,
+  sourceText: string
+): SymbolNode | undefined {
+  return findBestLocalSymbolNodeForLookup(symbol, sourceText);
+}
+
 function createResolvedSymbolMetadata(
-  symbol: ResolvedRustSymbol
+  symbol: ResolvedRustSymbol,
+  matchedNode?: SymbolNode
 ): EvidenceMetadata {
   return {
     nodeId: symbol.id ?? `${symbol.filePath}:${symbol.name}:${symbol.startLine ?? 0}`,
@@ -560,8 +859,8 @@ function createResolvedSymbolMetadata(
     modulePath: symbol.modulePath ?? path.basename(symbol.filePath, path.extname(symbol.filePath)),
     symbolKind: symbol.kind ?? "function",
     symbolName: symbol.name,
-    startLine: symbol.startLine ?? 1,
-    endLine: symbol.endLine ?? symbol.startLine ?? 1
+    startLine: matchedNode?.span.startLine ?? symbol.startLine ?? 1,
+    endLine: matchedNode?.span.endLine ?? symbol.endLine ?? symbol.startLine ?? 1
   };
 }
 
@@ -938,7 +1237,7 @@ function extractNodeSnippet(
   }
 
   const lines: string[] = [];
-  const maxLines = compact ? 20 : Number.POSITIVE_INFINITY;
+  const maxLines = compact ? COMPACT_SNIPPET_MAX_LINES : Number.POSITIVE_INFINITY;
 
   for (
     let lineIndex = startLine;

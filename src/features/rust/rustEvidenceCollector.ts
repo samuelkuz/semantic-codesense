@@ -14,6 +14,11 @@ import type { RepositoryGraph, SymbolContext, SymbolNode } from "../../types/gra
 import type { CargoWorkspaceContext } from "./rustCargoMetadata";
 import { inferRustModulePath } from "./rustCargoMetadata";
 import { collectRustLspSnapshot } from "./rustLspClient";
+import { resolveNodeToFullLocalSpan } from "./rustLocalSymbolResolver";
+import {
+  findTraitImplNodesForMethod,
+  getHelperRelatedTypeNames
+} from "./rustEvidenceRetriever";
 
 const CONTEXT_TREE_SITTER_PARSER = new Parser();
 
@@ -44,6 +49,7 @@ const COMMON_TYPE_NAMES = new Set([
   "f32",
   "f64"
 ]);
+const COMPACT_SNIPPET_MAX_LINES = 80;
 
 export interface RustEvidenceCollectionInput {
   document: vscode.TextDocument;
@@ -79,30 +85,46 @@ export class RustEvidenceCollector
   async collect(
     input: RustEvidenceCollectionInput
   ): Promise<EvidenceArtifact[]> {
-    const targetSnippet = extractNodeSnippet(
-      input.document,
+    const targetRenderContext = await getRenderableNodeContext(
       input.targetNode,
-      false
+      input.document
     );
+    const targetSnippet = targetRenderContext
+      ? extractNodeSnippet(
+          targetRenderContext.document,
+          targetRenderContext.node,
+          false
+        )
+      : undefined;
     const implNode = input.symbolContext.parents.find((node) => node.kind === "impl");
-    const implSnippet = implNode
-      ? await getSnippetForNode(implNode, input.document, true)
+    const implRenderContext = implNode
+      ? await getRenderableNodeContext(implNode, input.document)
+      : undefined;
+    const implSnippet = implRenderContext
+      ? extractNodeSnippet(implRenderContext.document, implRenderContext.node, true)
       : undefined;
     const ownerNode = findOwningTypeNode(
       input.graph,
       input.symbolContext,
       implNode
     );
-    const ownerSnippet = ownerNode
-      ? await getSnippetForNode(ownerNode, input.document, true)
+    const ownerRenderContext = ownerNode
+      ? await getRenderableNodeContext(ownerNode, input.document)
+      : undefined;
+    const ownerSnippet = ownerRenderContext
+      ? extractNodeSnippet(ownerRenderContext.document, ownerRenderContext.node, true)
       : undefined;
     const traitNode = findImplementedTraitNode(input.graph, implNode);
-    const traitSnippet = traitNode
-      ? await getSnippetForNode(traitNode, input.document, true)
+    const traitRenderContext = traitNode
+      ? await getRenderableNodeContext(traitNode, input.document)
+      : undefined;
+    const traitSnippet = traitRenderContext
+      ? extractNodeSnippet(traitRenderContext.document, traitRenderContext.node, true)
       : undefined;
     const helperFunctions = await collectHelperFunctionSummaries(
       input.symbolContext,
-      input.document
+      input.document,
+      input.graph
     );
     const importantTypes = await collectImportantTypeSummaries(
       input.symbolContext,
@@ -121,13 +143,13 @@ export class RustEvidenceCollector
     );
 
     return buildEvidenceArtifacts({
-      targetNode: input.targetNode,
+      targetNode: targetRenderContext?.node ?? input.targetNode,
       targetSnippet,
-      implNode,
+      implNode: implRenderContext?.node,
       implSnippet,
-      ownerNode,
+      ownerNode: ownerRenderContext?.node,
       ownerSnippet,
-      traitNode,
+      traitNode: traitRenderContext?.node,
       traitSnippet,
       helperFunctions,
       importantTypes,
@@ -139,25 +161,125 @@ export class RustEvidenceCollector
 
 async function collectHelperFunctionSummaries(
   symbolContext: SymbolContext,
-  currentDocument: vscode.TextDocument
+  currentDocument: vscode.TextDocument,
+  graph: RepositoryGraph
 ): Promise<DefinitionSummary[]> {
   const helperNodes = rankNodes(symbolContext.callees, (node) => {
     return (node.isExternal ? 100 : 0) + (node.filePath === currentDocument.uri.fsPath ? 0 : 10);
   }).slice(0, 8);
 
-  const summaries = await Promise.all(
-    helperNodes.map(async (node) => ({
-      kind: "helper_definition" as const,
-      label: `${node.kind} \`${node.name}\``,
-      filePath: node.filePath,
-      snippet: await getSnippetForNode(node, currentDocument, true),
-      metadata: createNodeMetadata(node, {
-        renderAsCode: true
-      })
-    }))
+  const summaryGroups = await Promise.all(
+    helperNodes.map(async (node) => {
+      const renderContext = await getRenderableNodeContext(node, currentDocument);
+      const helperSummaries: DefinitionSummary[] = [{
+        kind: "helper_definition" as const,
+        label: `${node.kind} \`${node.name}\``,
+        filePath: node.filePath,
+        snippet: renderContext
+          ? extractNodeSnippet(renderContext.document, renderContext.node, true)
+          : undefined,
+        metadata: createNodeMetadata(renderContext?.node ?? node, {
+          renderAsCode: true
+        })
+      }];
+      const helperNode = renderContext?.node ?? node;
+
+      if (!helperNode.isExternal && helperNode.filePath === currentDocument.uri.fsPath) {
+        const nodesById = new Map(graph.nodes.map((candidate) => [candidate.id, candidate] as const));
+        const parentNode = helperNode.parentSymbolId
+          ? nodesById.get(helperNode.parentSymbolId)
+          : undefined;
+
+        if (parentNode?.kind === "trait") {
+          const implNodes = findTraitImplNodesForMethod(
+            graph,
+            parentNode.name,
+            helperNode.name
+          ).slice(0, 2);
+
+          for (const implNode of implNodes) {
+            const implRenderContext = await getRenderableNodeContext(
+              implNode,
+              currentDocument
+            );
+            const implSnippet = implRenderContext
+              ? extractNodeSnippet(
+                  implRenderContext.document,
+                  implRenderContext.node,
+                  true
+                )
+              : undefined;
+
+            if (!implSnippet) {
+              continue;
+            }
+
+            helperSummaries.push({
+              kind: "trait_impl",
+              label: `impl \`${implRenderContext?.node.name ?? implNode.name}\` for helper \`${helperNode.name}\``,
+              filePath: implNode.filePath,
+              snippet: implSnippet,
+              metadata: createNodeMetadata(implRenderContext?.node ?? implNode, {
+                renderAsCode: true,
+                relationship: "helper_trait_impl",
+                sourceHelperName: helperNode.name,
+                traitName: parentNode.name
+              })
+            });
+          }
+        }
+
+        const relatedTypeNames = getHelperRelatedTypeNames(graph, helperNode).slice(0, 3);
+
+        for (const relatedTypeName of relatedTypeNames) {
+          const relatedTypeNode = graph.nodes.find(
+            (candidate) =>
+              !candidate.isExternal &&
+              candidate.name === relatedTypeName &&
+              (candidate.kind === "struct" ||
+                candidate.kind === "enum" ||
+                candidate.kind === "trait")
+          );
+
+          if (!relatedTypeNode) {
+            continue;
+          }
+
+          const typeRenderContext = await getRenderableNodeContext(
+            relatedTypeNode,
+            currentDocument
+          );
+          const typeSnippet = typeRenderContext
+            ? extractNodeSnippet(
+                typeRenderContext.document,
+                typeRenderContext.node,
+                true
+              )
+            : undefined;
+
+          if (!typeSnippet) {
+            continue;
+          }
+
+          helperSummaries.push({
+            kind: "type_definition",
+            label: `${relatedTypeNode.kind} \`${relatedTypeNode.name}\` for helper \`${helperNode.name}\``,
+            filePath: relatedTypeNode.filePath,
+            snippet: typeSnippet,
+            metadata: createNodeMetadata(typeRenderContext?.node ?? relatedTypeNode, {
+              renderAsCode: true,
+              relationship: "helper_related_type",
+              sourceHelperName: helperNode.name
+            })
+          });
+        }
+      }
+
+      return helperSummaries;
+    })
   );
 
-  return summaries.slice(0, 8);
+  return summaryGroups.flat().slice(0, 16);
 }
 
 async function collectImportantTypeSummaries(
@@ -178,13 +300,20 @@ async function collectImportantTypeSummaries(
       node,
       cargoWorkspace
     );
+    const renderContext = resolvedNode
+      ? await getRenderableNodeContext(resolvedNode, currentDocument)
+      : await getRenderableNodeContext(node, currentDocument);
+    const snippet = renderContext
+      ? extractNodeSnippet(renderContext.document, renderContext.node, true)
+      : undefined;
+    const metadataNode = renderContext?.node ?? resolvedNode ?? node;
 
     return {
       kind: "type_definition" as const,
-      label: `${(resolvedNode ?? node).kind} \`${(resolvedNode ?? node).name}\``,
-      filePath: (resolvedNode ?? node).filePath,
-      snippet: await getSnippetForNode(resolvedNode ?? node, currentDocument, true),
-      metadata: createNodeMetadata(resolvedNode ?? node, {
+      label: `${metadataNode.kind} \`${metadataNode.name}\``,
+      filePath: metadataNode.filePath,
+      snippet,
+      metadata: createNodeMetadata(metadataNode, {
         renderAsCode: true
       })
     };
@@ -528,8 +657,28 @@ async function getSnippetForNode(
   currentDocument: vscode.TextDocument,
   compact: boolean
 ): Promise<string | undefined> {
+  const renderContext = await getRenderableNodeContext(node, currentDocument);
+
+  if (!renderContext) {
+    return undefined;
+  }
+
+  if (renderContext.node.isExternal) {
+    return renderContext.node.signature;
+  }
+
+  return extractNodeSnippet(renderContext.document, renderContext.node, compact);
+}
+
+async function getRenderableNodeContext(
+  node: SymbolNode,
+  currentDocument: vscode.TextDocument
+): Promise<{ node: SymbolNode; document: vscode.TextDocument } | undefined> {
   if (node.isExternal) {
-    return node.signature;
+    return {
+      node,
+      document: currentDocument
+    };
   }
 
   const document =
@@ -538,7 +687,10 @@ async function getSnippetForNode(
       ? currentDocument
       : await vscode.workspace.openTextDocument(vscode.Uri.file(node.filePath));
 
-  return extractNodeSnippet(document, node, compact);
+  return {
+    node: resolveNodeToFullLocalSpan(node, document.getText()),
+    document
+  };
 }
 
 async function resolveNodeViaWorkspaceSymbols(
@@ -750,7 +902,7 @@ function extractNodeSnippet(
   }
 
   const lines: string[] = [];
-  const maxLines = compact ? 20 : Number.POSITIVE_INFINITY;
+  const maxLines = compact ? COMPACT_SNIPPET_MAX_LINES : Number.POSITIVE_INFINITY;
 
   for (
     let lineIndex = startLine;

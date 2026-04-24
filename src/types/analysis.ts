@@ -31,4 +31,5 @@ export interface AnalysisLoopResult {
   draftsByRound: DraftHypothesis[];
   rounds: AnalysisRoundResult[];
   stopReason: AnalysisStopReason;
+  hypothesisPromptsByRound?: string[];
 }
