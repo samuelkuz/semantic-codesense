@@ -1,36 +1,57 @@
 # Semantic CodeSense
 
-Semantic CodeSense is a VS Code extension scaffold for exploring AI-assisted mental-model comments for Rust code. The Rust comment generation itself is not implemented yet; this repo sets up the structure, command surface, and extension plumbing needed to build it cleanly.
+Semantic CodeSense is a VS Code extension for building mental models of Rust code. It analyzes the symbol under your cursor, gathers structural evidence from the file and editor tooling, runs a bounded analysis loop, and renders a Markdown summary through a local Ollama model.
 
-## What is scaffolded
+The project is still early-stage, but it is no longer just command scaffolding. The Rust graph, evidence collection pipeline, analysis orchestration, and Ollama-backed summary generation are all wired up today.
 
-- A TypeScript-based VS Code extension project
-- A placeholder command for generating a mental-model comment
-- A Rust-oriented symbol graph model for functions, structs, enums, traits, impls, methods, and modules
-- Rust-specific extension hooks via Code Actions and optional CodeLens
-- Basic configuration, output logging, and source organization
-- Unit-test scaffolding for graph extraction, context lookup, and placeholder generation flow
-- Launch and task files for local extension development in VS Code
+## Current capabilities
+
+- Rust-only VS Code extension workflow
+- Cursor-based symbol inspection for functions, methods, impls, traits, enums, structs, and modules
+- Tree-sitter Rust parsing for syntax-aware symbol and relationship extraction
+- Rust graph construction with edges such as `belongs_to`, `calls`, `called_by`, `uses_type`, `implements`, and `imports`
+- LSP and `cargo metadata` augmentation hooks for richer context
+- Evidence collection, retrieval planning, ranking, and bounded multi-round analysis
+- Ollama-backed semantic summaries rendered as Markdown in a side editor
+- Debug and inspection commands for graph payloads and symbol-context reports
+- Unit tests for parsing, retrieval, ranking, orchestration, and summary formatting
 
 ## Commands
 
 - `Semantic CodeSense: Generate Mental Model Comment`
+  Builds a Rust symbol-context report, runs the analysis loop, sends ranked evidence to Ollama, and opens a Markdown semantic summary.
 - `Semantic CodeSense: Show Rust Graph Debug View`
+  Opens a JSON document with syntax output, graph nodes and edges, Cargo workspace data, selected-symbol context, and LSP snapshot data.
 - `Semantic CodeSense: Show Rust Symbol Context`
+  Opens a Markdown report for the symbol under the cursor, including parent context, dependency context, and usage context.
 
-Today this command only confirms that the extension wiring is working and that AI generation has not been implemented yet.
-The debug command opens a JSON view of the current Rust file's parsed syntax model, graph nodes and edges, selected-symbol context, Cargo workspace summary, and any rust-analyzer/LSP data available at the cursor.
-The symbol context command opens a Markdown report for the symbol under the cursor with core context, dependency context, and usage context gathered from the augmented Rust graph plus rust-analyzer.
+These commands are available from the Command Palette and the Rust editor context menu. An optional CodeLens entry can also surface the generate command above supported Rust symbols.
 
-## Project layout
+## Requirements
 
-- `src/extension.ts`: extension activation entrypoint
-- `src/commands/`: user-invoked VS Code commands
-- `src/features/rust/`: Rust-specific editor integrations, graph building, and symbol lookup
-- `src/services/`: future AI service boundary
-- `src/core/`: shared configuration and logging helpers
-- `src/types/graph.ts`: repository graph backbone types
-- `src/test/`: unit tests for the current scaffolding
+- VS Code `^1.95.0`
+- Node.js and npm for local development
+- A Rust workspace to inspect
+- A local Ollama server if you want generated summaries
+
+Without Ollama, the graph and symbol-context inspection commands still work, but summary generation will fail when it tries to call the configured Ollama endpoint.
+
+## Configuration
+
+The extension contributes these settings under `semanticCodesense`:
+
+- `semanticCodesense.enabled`
+  Enable or disable Semantic CodeSense for Rust files.
+- `semanticCodesense.commentTone`
+  Reserved for future tone control. Current values: `concise`, `balanced`, `detailed`.
+- `semanticCodesense.logLevel`
+  Output channel verbosity: `error`, `warn`, `info`, `debug`.
+- `semanticCodesense.showCodeLens`
+  Shows CodeLens actions above supported Rust symbols when enabled.
+- `semanticCodesense.ollamaBaseUrl`
+  Ollama base URL. Default: `http://localhost:11434`
+- `semanticCodesense.ollamaModel`
+  Ollama model name for hypothesis and summary generation. Default: `qwen3-coder:30b`
 
 ## Local development
 
@@ -39,35 +60,66 @@ npm install
 npm run compile
 ```
 
-Then open the project in VS Code and press `F5` to launch an Extension Development Host.
+Useful scripts:
 
-## Testing On A Rust Repo
+- `npm run watch`
+- `npm run lint`
+- `npm test`
 
-1. Open this extension project in VS Code.
-2. Press `F5` to launch the Extension Development Host.
-3. In the Extension Development Host, open any Rust workspace or repo.
-4. Open a `.rs` file and place your cursor inside a function or method.
-5. Run `Semantic CodeSense: Show Rust Graph Debug View` from the Command Palette.
-6. Run `Semantic CodeSense: Show Rust Symbol Context` to inspect the retrieval-style context report for the symbol under your cursor.
+To run the extension locally:
 
-That debug view is the easiest way to inspect what the extension currently understands about the file.
+1. Open this repo in VS Code.
+2. Press `F5` to launch an Extension Development Host.
+3. In the new window, open a Rust workspace.
+4. Open a `.rs` file and place the cursor on a symbol of interest.
+5. Run one of the Semantic CodeSense commands from the Command Palette or editor context menu.
 
-## Retrieval backbone
+## Trying it against the sample Rust workspace
 
-The Rust graph builder now creates:
+This repo includes [`test-rust-code`](/Users/samkuz/Coding/semantic-codesense/test-rust-code), a compact Rust crate designed to exercise the analysis pipeline.
 
-- `SymbolNode` records for modules, structs, enums, traits, impl blocks, functions, and methods
-- `belongs_to`, `calls`, `called_by`, `uses_type`, `implements`, and `imports` edges
-- A `SymbolContext` view so a selected function or method can resolve its parent chain, callees, callers, and touched types
-- A layered Rust parsing stack: VS Code/LSP for navigation metadata, Tree-sitter Rust for syntax extraction, and `cargo metadata` hooks for workspace/package context
+Some good symbols to inspect:
 
-The syntax layer now uses Tree-sitter Rust rather than regex-first parsing for symbol discovery. LSP and Cargo metadata adapters are also in place so future retrieval can enrich symbols with references, hover content, definitions, call hierarchy, and workspace context without changing the graph model.
+- `services::OrderProcessor::process_order`
+- `services::OrderProcessor::finalize_order`
+- `review::should_queue_manual_review`
+- `routing::route_fulfillment_lane`
+- `repository::InMemoryOrderRepository::append_audit`
 
-## Suggested next steps
+Start with `Show Rust Symbol Context` to see what the extension has collected, then use `Generate Mental Model Comment` once Ollama is running.
 
-- Expand from file-level graph building to multi-file repo graph assembly
-- Merge LSP call hierarchy and reference data into the graph as higher-confidence edges when rust-analyzer is active
-- Use Cargo workspace metadata to improve crate-relative module path resolution
-- Add a real AI provider client and prompt pipeline behind `CommentGenerationService`
-- Insert generated comments through workspace edits with reviewable diffs
-- Add extension host tests once the editor workflow is implemented
+## Project layout
+
+- [`src/extension.ts`](/Users/samkuz/Coding/semantic-codesense/src/extension.ts): activation entrypoint
+- [`src/commands/`](/Users/samkuz/Coding/semantic-codesense/src/commands): user-facing VS Code commands
+- [`src/features/rust/`](/Users/samkuz/Coding/semantic-codesense/src/features/rust): Rust parsing, graph building, LSP augmentation, and context collection
+- [`src/evidence/`](/Users/samkuz/Coding/semantic-codesense/src/evidence): evidence storage and orchestration
+- [`src/retrieval/`](/Users/samkuz/Coding/semantic-codesense/src/retrieval): retrieval planning and evidence lookup
+- [`src/ranking/`](/Users/samkuz/Coding/semantic-codesense/src/ranking): evidence ranking
+- [`src/services/`](/Users/samkuz/Coding/semantic-codesense/src/services): Ollama-backed hypothesis and comment generation services
+- [`src/analysis/`](/Users/samkuz/Coding/semantic-codesense/src/analysis): bounded analysis loop orchestration
+- [`src/test/`](/Users/samkuz/Coding/semantic-codesense/src/test): unit tests
+
+## How the pipeline works
+
+1. Resolve the Rust symbol at the current cursor position.
+2. Parse the file with Tree-sitter and build a symbol graph.
+3. Enrich that graph with editor/LSP and Cargo workspace context where available.
+4. Collect evidence artifacts about the target symbol and related symbols.
+5. Run a bounded analysis loop that drafts hypotheses, plans retrieval, gathers more evidence, and ranks the result set.
+6. Send the ranked evidence to Ollama and render the returned JSON as a Markdown semantic summary.
+
+## Known limitations
+
+- The extension is currently focused on Rust only.
+- Summary generation depends on a reachable local Ollama server.
+- Analysis is strongest for symbols that can be resolved from the active file and nearby graph context.
+- Cross-file and whole-repository understanding is still evolving.
+
+## Near-term direction
+
+- Improve multi-file and crate-wide graph assembly
+- Fold more rust-analyzer call/reference data into the evidence graph
+- Improve Cargo-aware module-path and workspace resolution
+- Add richer reviewable comment insertion workflows inside the editor
+- Expand extension-host style integration coverage
